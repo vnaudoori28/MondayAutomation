@@ -1,1 +1,45 @@
+name: Export monday.com Board to CSV
 
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  export:
+    name: Fetch & Save Board CSV
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Check out the repo so we can commit the CSV back into it
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Set up Python
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 3. Install dependencies
+      - name: Install dependencies
+        run: pip install requests
+
+      # 4. Run the export script
+      #    Secrets are injected as env vars — never hard-code them here.
+      - name: Run export script
+        env:
+          MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
+          MONDAY_BOARD_ID:  ${{ secrets.MONDAY_BOARD_ID }}
+          OUTPUT_DIR:       exports
+        run: python export_monday_board.py
+
+      # 5. Commit and push the new CSV file back to the repo
+      - name: Commit exported CSV
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add exports/
+          # Only commit if there is actually something new
+          git diff --cached --quiet || git commit -m "chore: daily monday.com export $(date -u +'%Y-%m-%d')"
+          git push
