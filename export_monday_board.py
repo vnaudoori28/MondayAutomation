@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 monday.com Board Exporter
-Fetches all items (including update threads) from a board via GraphQL API
-and saves them as a CSV file.
+Fetches all items (including update threads) from a specific group
+in a board via GraphQL API and saves them as a CSV file.
 """
 
 import os
@@ -14,6 +14,9 @@ from datetime import datetime
 API_TOKEN  = os.environ["MONDAY_API_TOKEN"]   # monday.com API v2 token
 BOARD_ID   = os.environ["MONDAY_BOARD_ID"]    # numeric board ID
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "exports")  # folder to save CSVs
+
+# Only export items from this group (case-insensitive match)
+TARGET_GROUP = "Programs in Planning and Delivery Phase"
 # ────────────────────────────────────────────────────────────────────────────
 
 API_URL = "https://api.monday.com/v2"
@@ -24,11 +27,49 @@ HEADERS = {
 }
 
 
-def fetch_board_items(board_id: str):
-    """Fetch all items from a board, handling pagination."""
+def fetch_group_id(board_id: str, group_name: str) -> tuple:
+    """Find the group ID and board name matching the given group name."""
+    query = """
+    query ($board_id: ID!) {
+      boards(ids: [$board_id]) {
+        name
+        groups {
+          id
+          title
+        }
+      }
+    }
+    """
+    response = requests.post(
+        API_URL,
+        headers=HEADERS,
+        json={"query": query, "variables": {"board_id": board_id}},
+        timeout=30,
+    )
+    response.raise_for_status()
+    data = response.json()
+
+    if "errors" in data:
+        raise RuntimeError(f"GraphQL errors: {data['errors']}")
+
+    board = data["data"]["boards"][0]
+    board_name = board["name"]
+
+    for group in board["groups"]:
+        if group["title"].strip().lower() == group_name.strip().lower():
+            return board_name, group["id"]
+
+    available = [g["title"] for g in board["groups"]]
+    raise ValueError(
+        f"Group '{group_name}' not found on board '{board_name}'.\n"
+        f"Available groups: {available}"
+    )
+
+
+def fetch_group_items(board_id: str, group_id: str):
+    """Fetch all items from a specific group, handling pagination."""
     all_items = []
     cursor = None
-    board_name = ""
 
     while True:
         if cursor:
@@ -56,29 +97,30 @@ def fetch_board_items(board_id: str):
             resp_key = "next_items_page"
         else:
             query = """
-            query ($board_id: ID!) {
+            query ($board_id: ID!, $group_id: String!) {
               boards(ids: [$board_id]) {
-                name
-                items_page(limit: 500) {
-                  cursor
-                  items {
-                    id
-                    name
-                    state
-                    created_at
-                    updated_at
-                    group { title }
-                    column_values {
+                groups(ids: [$group_id]) {
+                  items_page(limit: 500) {
+                    cursor
+                    items {
                       id
-                      column { title }
-                      text
+                      name
+                      state
+                      created_at
+                      updated_at
+                      group { title }
+                      column_values {
+                        id
+                        column { title }
+                        text
+                      }
                     }
                   }
                 }
               }
             }
             """
-            variables = {"board_id": board_id}
+            variables = {"board_id": board_id, "group_id": group_id}
             resp_key = None
 
         response = requests.post(
@@ -96,9 +138,7 @@ def fetch_board_items(board_id: str):
         if resp_key == "next_items_page":
             page = data["data"]["next_items_page"]
         else:
-            board = data["data"]["boards"][0]
-            board_name = board["name"]
-            page = board["items_page"]
+            page = data["data"]["boards"][0]["groups"][0]["items_page"]
 
         all_items.extend(page["items"])
         cursor = page.get("cursor")
@@ -107,7 +147,7 @@ def fetch_board_items(board_id: str):
         if not cursor:
             break
 
-    return board_name, all_items
+    return all_items
 
 
 def fetch_updates_for_items(item_ids: list) -> dict:
@@ -173,26 +213,24 @@ def flatten_item(item: dict, updates_map: dict) -> dict:
         col_title = cv["column"]["title"]
         row[col_title] = cv.get("text") or ""
 
-    # Updates column: all comments joined with " | " separator
     row["Updates"] = updates_map.get(item["id"], "")
-
     return row
 
 
-def export_to_csv(board_name: str, items: list, updates_map: dict, output_dir: str):
+def export_to_csv(board_name: str, group_name: str, items: list, updates_map: dict, output_dir: str):
     """Write items to a timestamped CSV file."""
     os.makedirs(output_dir, exist_ok=True)
 
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    safe_name = "".join(c if c.isalnum() else "_" for c in board_name)
-    filename = f"{safe_name}_{timestamp}.csv"
+    safe_board = "".join(c if c.isalnum() else "_" for c in board_name)
+    safe_group = "".join(c if c.isalnum() else "_" for c in group_name)
+    filename = f"{safe_board}__{safe_group}__{timestamp}.csv"
     filepath = os.path.join(output_dir, filename)
 
     if not items:
-        print("No items found on board. CSV will not be created.")
+        print("No items found in group. CSV will not be created.")
         return None
 
-    # Collect all column headers preserving order
     all_keys = []
     seen = set()
     for item in items:
@@ -213,9 +251,13 @@ def export_to_csv(board_name: str, items: list, updates_map: dict, output_dir: s
 def main():
     print(f"[{datetime.utcnow().isoformat()}] Starting monday.com board export...")
     print(f"  Board ID : {BOARD_ID}")
+    print(f"  Group    : {TARGET_GROUP}")
 
-    board_name, items = fetch_board_items(BOARD_ID)
+    board_name, group_id = fetch_group_id(BOARD_ID, TARGET_GROUP)
     print(f"  Board    : {board_name}")
+    print(f"  Group ID : {group_id}")
+
+    items = fetch_group_items(BOARD_ID, group_id)
     print(f"  Items    : {len(items)}")
 
     print("  Fetching updates/comments...")
@@ -223,7 +265,7 @@ def main():
     updates_map = fetch_updates_for_items(item_ids)
     print(f"  Updates fetched for {len(updates_map)} items.")
 
-    filepath = export_to_csv(board_name, items, updates_map, OUTPUT_DIR)
+    filepath = export_to_csv(board_name, TARGET_GROUP, items, updates_map, OUTPUT_DIR)
     if filepath:
         print(f"  Saved to : {filepath}")
     print("Done.")
