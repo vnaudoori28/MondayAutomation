@@ -34,9 +34,10 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           OUTPUT_DIR: exports
+          SENT_LOG: exports/sent_log.json
         run: python send_callout_emails.py
 
-      - name: Commit exported CSV
+      - name: Commit exported CSV and sent log
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
