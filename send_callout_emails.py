@@ -31,8 +31,7 @@ SENT_LOG      = os.environ.get("SENT_LOG", "exports/sent_log.json")
 # ────────────────────────────────────────────────────────────────────────────
 
 # Matches @Firstname Lastname (two capitalised words) then captures
-# everything after as the task — including newlines replaced by spaces.
-# Also handles single-word names like @Vedanth
+# everything after as the task.
 CALLOUT_PATTERN = re.compile(
     r'@([A-Z][^\s@][^\s]*(?:\s+[A-Z][^\s@][^\s]*)?)\s+([\s\S]+?)(?=\s*@[A-Z]|\s*$)'
 )
@@ -41,7 +40,6 @@ CALLOUT_PATTERN = re.compile(
 # ── Deduplication helpers ────────────────────────────────────────────────────
 
 def load_sent_log(path: str) -> set:
-    """Load the set of already-sent callout hashes from disk."""
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
             return set(json.load(f))
@@ -49,14 +47,12 @@ def load_sent_log(path: str) -> set:
 
 
 def save_sent_log(path: str, sent: set) -> None:
-    """Persist the sent log back to disk."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(sorted(sent), f, indent=2)
 
 
 def callout_hash(item_name: str, date: str, author: str, mention: str, task: str) -> str:
-    """Stable unique hash for a callout — used to detect duplicates."""
     key = f"{item_name}|{date}|{author}|{mention}|{task.strip()}"
     return hashlib.sha256(key.encode()).hexdigest()
 
@@ -64,7 +60,6 @@ def callout_hash(item_name: str, date: str, author: str, mention: str, task: str
 # ── CSV helpers ──────────────────────────────────────────────────────────────
 
 def find_latest_csv(output_dir: str) -> str:
-    """Return the most recently modified CSV in the exports folder."""
     files = glob.glob(os.path.join(output_dir, "*.csv"))
     if not files:
         raise FileNotFoundError(f"No CSV files found in '{output_dir}'")
@@ -87,7 +82,6 @@ def extract_callouts(updates_text: str) -> list:
         if not entry:
             continue
 
-        # Pull out [date author] header
         header_match = re.match(r'\[(\d{4}-\d{2}-\d{2})\s+(.+?)\]\s*([\s\S]*)', entry)
         if not header_match:
             continue
@@ -96,10 +90,9 @@ def extract_callouts(updates_text: str) -> list:
         author = header_match.group(2).strip()
         body   = header_match.group(3).strip()
 
-        # Normalise newlines to spaces for cleaner subject lines
+        # Normalise newlines to spaces for cleaner matching
         body_flat = re.sub(r'\s+', ' ', body)
 
-        # Find every @mention in this update entry
         for m in CALLOUT_PATTERN.finditer(body_flat):
             mention = m.group(1).strip()
             task    = m.group(2).strip()
@@ -123,19 +116,19 @@ def send_email(item_name: str, group: str, callout: dict) -> None:
     author  = callout["author"]
     date    = callout["date"]
 
-    # Full callout in subject — no truncation of name or task
-    subject = f"Action Required: @{mention} {task}"
+    # Subject: Item Name | @Mention task description
+    subject = f"{item_name} | @{mention} {task}"
 
     body = f"""Hi,
 
-A callout was posted in monday.com that requires attention:
+A callout was posted in monday.com that requires attention.
 
-  Board Item : {item_name}
-  Group      : {group}
-  Posted by  : {author}
-  Date       : {date}
+  Program / Task : {item_name}
+  Group          : {group}
+  Posted by      : {author}
+  Date           : {date}
 
-  Callout    : @{mention} {task}
+  Callout        : @{mention} {task}
 
 Please action this at your earliest convenience.
 
@@ -200,10 +193,10 @@ def main():
 
                 if chash in sent_hashes:
                     total_skipped += 1
-                    print(f"  Skipping : @{callout['mention']} (already sent)")
+                    print(f"  Skipping : @{callout['mention']} on '{item_name}' (already sent)")
                     continue
 
-                print(f"  Sending  : @{callout['mention']} — {callout['task'][:60]}...")
+                print(f"  Sending  : [{item_name}] @{callout['mention']} — {callout['task'][:50]}...")
                 try:
                     send_email(item_name, group, callout)
                     sent_hashes.add(chash)
@@ -212,7 +205,6 @@ def main():
                 except Exception as e:
                     print(f"             ✗ Failed: {e}")
 
-    # Persist updated log so tomorrow's run knows what was already sent
     save_sent_log(SENT_LOG, sent_hashes)
 
     print(f"\n  Callouts found : {total_callouts}")
